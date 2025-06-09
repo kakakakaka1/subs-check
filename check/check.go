@@ -3,6 +3,7 @@ package check
 import (
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/http"
@@ -247,10 +248,10 @@ func (pc *ProxyChecker) checkProxy(proxy map[string]any) *Result {
 	}
 
 	var speed int
-	var totalBytes int64
+	// var totalBytes int64
 	if config.GlobalConfig.SpeedTestUrl != "" {
-		speed, totalBytes, err = platform.CheckSpeed(httpClient.Client, Bucket)
-		TotalBytes.Add(totalBytes)
+		speed, _, err = platform.CheckSpeed(httpClient.Client, Bucket)
+		// TotalBytes.Add(totalBytes)
 		if err != nil || speed < config.GlobalConfig.MinSpeed {
 			return nil
 		}
@@ -387,10 +388,60 @@ func (pc *ProxyChecker) collectResults() {
 	}
 }
 
-// CreateClient creates and returns an http.Client with a Close function
+// 首先定义计数传输层结构体
+type CountingTransport struct {
+	RoundTripper http.RoundTripper
+	bytesRead    atomic.Int64
+}
+
+// 实现 RoundTripper 接口
+func (t *CountingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.RoundTripper.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// 包装响应体以计算读取的字节数
+	resp.Body = &CountingReadCloser{
+		ReadCloser: resp.Body,
+		counter:    t,
+	}
+
+	return resp, nil
+}
+
+// 获取已读取的字节数
+func (t *CountingTransport) GetBytesRead() int64 {
+	return t.bytesRead.Load()
+}
+
+// 计数读取器
+type CountingReadCloser struct {
+	io.ReadCloser
+	counter *CountingTransport
+}
+
+func (rc *CountingReadCloser) Read(p []byte) (n int, err error) {
+	n, err = rc.ReadCloser.Read(p)
+	if n > 0 {
+		rc.counter.bytesRead.Add(int64(n))
+	}
+	return
+}
+
+// 修改 ProxyClient 结构体，添加计数功能
 type ProxyClient struct {
-	*http.Client
-	proxy constant.Proxy
+	Client    *http.Client
+	proxy     constant.Proxy
+	transport *CountingTransport // 添加这个字段以便访问计数器
+}
+
+// 获取已下载的字节数
+func (c *ProxyClient) GetBytesRead() int64 {
+	if c.transport != nil {
+		return c.transport.GetBytesRead()
+	}
+	return 0
 }
 
 func CreateClient(mapping map[string]any) *ProxyClient {
@@ -419,18 +470,25 @@ func CreateClient(mapping map[string]any) *ProxyClient {
 		DisableKeepAlives: true,
 	}
 
+	// 创建计数传输层
+	countingTransport := &CountingTransport{
+		RoundTripper: transport,
+	}
+
 	return &ProxyClient{
 		Client: &http.Client{
 			Timeout:   time.Duration(config.GlobalConfig.Timeout) * time.Millisecond,
-			Transport: transport,
+			Transport: countingTransport,
 		},
-		proxy: proxy,
+		proxy:     proxy,
+		transport: countingTransport, // 保存引用以便后续获取计数
 	}
 }
 
 // Close closes the proxy client and cleans up resources
 // 防止底层库有一些泄露，所以这里手动关闭
 func (pc *ProxyClient) Close() {
+	TotalBytes.Add(pc.GetBytesRead())
 	if pc.Client != nil {
 		pc.Client.CloseIdleConnections()
 	}
