@@ -222,16 +222,18 @@ proxy: ""
 # 符合条件节点数量的占比，低于此值会将订阅链接打印出来，用于排查质量差的订阅
 success-rate: 0
 
+# 是否允许 IPv6/AAAA 解析和连接
+ipv6: true
+
 # DNS 配置，支持 udp/tcp/tls/https/quic 协议
-# enable=false 走 mihomo 默认（系统 DNS + 仅 IPv4）；ipv6=true 允许 v6 解析
+# enable=false 使用系统 DNS；enable=true 使用以下自定义 DNS
 # enable=true 三字段可留空，按 proxy-server-nameserver→nameserver→default-nameserver 链回落
 # default-nameserver 用作 bootstrap 必须是纯 IP
 dns:
   enable: false
-  ipv6: false
-  nameserver:
-    - https://dns.alidns.com/dns-query
   proxy-server-nameserver:
+    - https://dns.alidns.com/dns-query
+  nameserver:
     - https://dns.alidns.com/dns-query
   default-nameserver:
     - 223.5.5.5
